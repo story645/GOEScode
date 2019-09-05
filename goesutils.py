@@ -51,7 +51,7 @@ def goes_2_roi(loaded_goes,
                                           pyresample_source_extent)
     area_target_def = geometry.AreaDefinition('areaTest', 'Target Region', 'areaTest',
                                               cartopy_target_proj.proj4_params,
-                                              target_rows, target_cols,
+                                              target_cols, target_rows,
                                               target_extent)
     geos_con_nn = image.ImageContainerNearest(rad,
                                               source_area,
