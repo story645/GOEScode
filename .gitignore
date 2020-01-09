@@ -4,6 +4,11 @@ goesdata
 # in case we want the empty folder
 goesdata/*
 
+# Don't want binary files in repo
+botoloading/data/*
+botoloading/output/*
+
+
 ### Start Standard .gitignore for python
 # Byte-compiled / optimized / DLL files
 __pycache__/
