@@ -26,6 +26,10 @@ import argparse
 import warnings
 import sys
 import yaml
+import logging
+
+info=None
+warning=None
 
 def goes_2_roi(loaded_goes, 
                target_extent,
@@ -64,7 +68,7 @@ def goes_2_roi(loaded_goes,
     # Here we are using pyresample for the remapping
     area_proj_con_nn = geos_con_nn.resample(area_target_def)
     area_proj_dqf_nn = geos_dqf_nn.resample(area_target_def)
-    print('Extracted', str(dat.t.data))
+    info('Extracted {}'.format(str(dat.t.data)))
     return area_proj_con_nn.image_data,area_proj_dqf_nn.image_data, lons, lats
         
 def cartopy_pyresample_toggle_extent(input_extent):
@@ -136,7 +140,7 @@ def processFilesToROI(platforms,
                       overwrite=False):
     
     # Reference projection for lon-lat
-    print(ROI)
+    info(str(ROI))
     pc = ccrs.PlateCarree()
     target_extent_mc_cartopy = trasform_cartopy_extent(ROI['extent'], pc, target_proj)
     target_extent_mc_pyresample = cartopy_pyresample_toggle_extent(target_extent_mc_cartopy)
@@ -145,7 +149,7 @@ def processFilesToROI(platforms,
     roidays = iterProduct(platforms, years, bands, daysofyear)
     # for attributes get list of files
     for attriblist in roidays:
-        print(attriblist)
+        info(str(attriblist))
         platform, year, band, dayofyear = attriblist
         # build filename
         xarray_name = ('OR_ABI-L1b-Rad{abiproduct}-M6C{band}_G{platform}_s' + 
@@ -158,7 +162,7 @@ def processFilesToROI(platforms,
         dirlist = os.listdir(indatapath)
         # if not empty
         filelist = sorted(getMatchesFromFiles(dirlist, band=band, platform=platform, year=year, dayofyear=dayofyear))
-        print("There are", len(filelist), "files that match criteria for ", attriblist)
+        info("There are {} files that match criteria for {}".format(len(filelist), attriblist))
         #print('\n'.join([fname[0] for fname in filelist]))
         if filelist and (overwrite or not xarray_out_path.exists()):
             # Short circuit for debugging
@@ -200,13 +204,14 @@ def processFilesToROI(platforms,
                                                         platform=str(platform).zfill(2),
                                                         year=str(year),
                                                         dayofyear=str(dayofyear).zfill(2))
-            print(xarray_name)
+            info('Attempting write of {}'.format(xarray_name))
             # save xarray with file name
             xfile.to_netcdf(xarray_out_path)
+            info('Write of {} successful.'.format(xarray_name))
         elif (len(filelist) == 0):
-            print('No input files found')
+            warning('No input files found for {}'.format(attriblist))
         elif (xarray_out_path.exists()):
-            print ("File exists. No overwite of ", str(xarray_out_path))
+            warning("File exists. No overwite of {}.".format(str(xarray_out_path)))
         #else: # for debugging
         #    print("filelist is empty:" + str(filelist),)
         #    print(' platform: '+str(platform),)
@@ -226,55 +231,106 @@ def parseUserArgs():
     parser.add_argument('--extent', help='Definines a lon-lat bounding box. lonmin,lonmax,latmax,latmin')
     parser.add_argument('--pixels-north-south', help='Number of pixels north-south')
     parser.add_argument('--pixels-east-west', help='Number of pixels east-west')
+    parser.add_argument('--logfile', help='Location of the logfile')
+    parser.add_argument('--overwrite', help='Should we overwrite any files found.')
     args = parser.parse_args()
     
+    # Problem with code
+    # If I put the defaults in the command line switches
+    # the defaults will over-ride config file
+    # but if use enters non-default switch
+    # that SHOULD over-ride config file
+    # so I need to detect default values
     config = {
-        'platforms': args.platform.split(',') if (args.platform) else [],
-        'years': [int(item) for item in args.year.split(',')] if (args.year) else None,
-        'daysofyear':  [int(item) for item in args.dayofyear.split(',')] if (args.dayofyear) else [],         
-        'bands':  [int(item) for item in args.band.split(',')] if (args.band) else [],
+        'platforms': [16,17],
+        'years': [2019,2020],
+        'daysofyear': list(range(1,366)),  
+        'bands':  list(range(1,17)),
         'ROI': {
-            'extent': [float(item) for item in args.extent.split(',')] if (args.extent) else [],
-            'north_south_px': [int(item) for item in args.pixels_north_south.split(',')] if (args.pixels_north_south) else [],
-            'east_west_px':[int(item) for item in args.pixels_east_west.split(',')] if (args.pixels_east_west) else []
-        }
+            'extent': None,
+            'north_south_px': None,
+            'east_west_px': None,
+        },
+        'outputpath': Path('.'),
+        'indatapath': Path('.'),
+        'overwrite': False,
+        'logfile' : 'extractROI.log'
     }
-    outputpath = Path(args.output_dir) if args.output_dir else None
-    if outputpath and not outputpath.exists():
-        warnings.warn('Output path does not exist')
-        sys.exit(-1)
-    config['outputpath'] = outputpath
-    indatapath = Path(args.data_dir) if args.data_dir else None
-    if indatapath and not indatapath.exists():
-        warnings.warn('Data path does not exist')
-        sys.exit(-1)
-    config['indatapath'] = indatapath
-
-    configdict = {}
+    config_update={}
     if args.config:
         config_file = Path(args.config) 
         if config_file.exists():
             with open(config_file,'r') as fid:
                 try:
-                    configdict = yaml.safe_load(fid)
+                    config_update = yaml.safe_load(fid)
                 except yaml.YAMLError as exc:
                     warnings.warn(exc)
                     sys.exit(-1)
         else:
             warnings.warn('Data path does not exist')
             sys.exit(-1)  
-    config.update(configdict)
+    config.update(config_update)
+
+    # Command line switches always override config
+    if args.platform:
+        config['platforms'] = [int(item) for item in args.platform.split(',')]
+    if args.year:
+        config['years'] = [int(item) for item in args.year.split(',')]
+    if args.dayofyear:
+        config['daysofyear'] = [int(item) for item in args.dayofyear.split(',')]
+    if args.band:
+        config['bands'] = [int(item) for item in args.band.split(',')]
+    if args.extent:
+        config['ROI']['extent'] = [float(item) for item in args.extent.split(',')]
+    if args.pixels_north_south:
+        config['ROI']['north_south_px'] = [int(item) for item in args.pixels_north_south.split(',')]
+    if args.pixels_east_west:
+        config['ROI']['east_west_px'] = [int(item) for item in args.pixels_east_west.split(',')]
+    if args.output_dir:
+        config['outputpath'] = Path(args.output_dir)
+    if args.data_dir:
+        config['indatapath'] = Path(args.data_dir)
+    if args.overwrite:
+        config['overwrite'] = True
+    if args.logfile:
+        config['logfile'] = args.logfile
+
+    # Just in case paths are strings
+    config['outputpath'] = Path(config['outputpath'])    
+    config['indatapath'] = Path(config['indatapath'])
+
+    # Check Paths exist
+    if not config['outputpath'].exists():
+        warnings.warn('Output path does not exist')
+        sys.exit(-1)
+    if not config['indatapath'].exists():
+        warnings.warn('Data path does not exist')
+        sys.exit(-1)
+
     return config
 
 
 def main():
+    global info
+    global warning
     config = parseUserArgs()
     started = datetime.datetime.now()
-    print("started ", started.strftime('%Y/%m/%D %I:%M %p'))
+    # identifier for the logging
+    Rid = np.random.randint(111111111,999999999)
+    logging.basicConfig(filename=config['logfile'],
+                        format='%(levelname)s %(asctime)s %(message)s '+str(Rid) + ':', 
+                        datefmt='%m/%d/%Y %I:%M:%S %p',
+                        level=logging.INFO)
+    info=logging.info
+    warning=logging.warning
+
+    info(str(config))
+    info("Started run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
+    del config['logfile'] # This would mess with processFilesToROI
     processFilesToROI(**config)
     finished = datetime.datetime.now()
-    print('Finished ', started.strftime('%Y/%m/%D %I:%M %p'))
-    print('Elapsed seconds', (finished-started).seconds)
+    info("Finished run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
+    info("Elapsed seconds: {}".format((finished-started).seconds))
 if __name__ == '__main__':
     main()
 
