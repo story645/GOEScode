@@ -168,35 +168,50 @@ def processFilesToROI(platforms,
             # Short circuit for debugging
             # filelist = filelist[:2]
             # Go through load each file
-            openDsets = [xr.open_dataset(Path(indatapath, fname[0])) for fname in  filelist]
-            # Do ROI conversions for each loaded file
-            roi_rads_array = [goes_2_roi(openDset,
-                   target_extent_mc_pyresample,
-                   ROI['north_south_px'],
-                   ROI['east_west_px'],
-                   target_proj) for openDset in openDsets]
-            _, _, lat, lon = roi_rads_array[0]
-            raddata = np.stack([roi_rad_array[0] for roi_rad_array in roi_rads_array],axis=-1)
-            dqfdata = np.stack([roi_rad_array[1] for roi_rad_array in roi_rads_array],axis=-1)
-            times = [openDset.t.data for openDset in openDsets]
-            planck_fk1 = [openDset.planck_fk1.data for openDset in openDsets]
-            planck_fk2 = [openDset.planck_fk2.data for openDset in openDsets]
-            planck_bc1 = [openDset.planck_bc1.data for openDset in openDsets]
-            planck_bc2 = [openDset.planck_bc2.data for openDset in openDsets]
-            # pack into xarray
-            # (note ignoring lon-lats)
-            xfile = xr.Dataset({'Rad':(['x','y','time'],raddata),
-                                'DQF':(['x','y','time'],dqfdata),
-                                 'planck_fk1':(['time'],planck_fk1),
-                                 'planck_fk2':(['time'],planck_fk2),
-                                 'planck_bc1':(['time'],planck_bc1),
-                                 'planck_bc2':(['time'],planck_bc2)}, 
-                                 coords={'lon': (['x', 'y'], lon),
-                                         'lat': (['x', 'y'], lat),
-                                         'time':times},
-                                  attrs={'platform':platform,
-                                         'abiproduct':'OR_ABI-L1b-Rad'+abiproduct,
-                                         'band':band})
+            # We know the number of files we have right here so lets commit memory
+            # Lets get all the paramters and put asside the memory right now
+            data_sz = (ROI['east_west_px'],ROI['north_south_px'],len(filelist))
+            # Need to get type dtype from first file
+            with xr.open_dataset(Path(indatapath, filelist[0][0])) as xr_dset:
+                time_dtype = np.dtype(xr_dset.t.data)
+            xfile = xr.Dataset({'Rad':(['x','y','time'],np.empty(data_sz)),
+                    'DQF':(['x','y','time'],np.empty(data_sz)),
+                        'planck_fk1':(['time'],np.empty(data_sz[-1])),
+                        'planck_fk2':(['time'],np.empty(data_sz[-1])),
+                        'planck_bc1':(['time'],np.empty(data_sz[-1])),
+                        'planck_bc2':(['time'],np.empty(data_sz[-1]))}, 
+                        coords={'lon': (['x', 'y'], np.empty(data_sz[:2])),
+                                'lat': (['x', 'y'], np.empty(data_sz[:2])),
+                                'time':np.array([None]*data_sz[-1],dtype=time_dtype)},
+                        attrs={'platform':platform,
+                                'abiproduct':'OR_ABI-L1b-Rad'+abiproduct,
+                                'band':band})
+            # Add lon, lat with first file
+            added_lon_lat = False
+            for ind, fname in  enumerate(filelist):
+                # For memory best not to do this in one shot
+                # forloop means we can load just what we need
+                # Making sure we don't create any unnecessary data structures
+                # Or leave any file pointers open
+                with xr.open_dataset(Path(indatapath, fname[0])) as xr_dset:
+                    # Do ROI conversions for each loaded file
+                    ROI_extraction = goes_2_roi(xr_dset,
+                    target_extent_mc_pyresample,
+                    ROI['north_south_px'],
+                    ROI['east_west_px'],
+                    target_proj) 
+                    if not added_lon_lat:
+                        _, _, lat, lon = ROI_extraction
+                        added_lon_lat = True
+                    xfile.Rad.data[:,:,ind] = ROI_extraction[0]
+                    xfile.DQF.data[:,:,ind] = ROI_extraction[1]
+                    xfile.time.data[ind]=xr_dset.t.data
+                    xfile.planck_fk1.data[ind] = xr_dset.planck_fk1.data
+                    xfile.planck_fk2.data[ind] = xr_dset.planck_fk2.data
+                    xfile.planck_bc1.data[ind] = xr_dset.planck_bc1.data
+                    xfile.planck_bc2.data[ind] = xr_dset.planck_bc2.data
+
+
 
             xarray_name = ('OR_ABI-L1b-Rad{abiproduct}-M6C{band}_G{platform}_s' + 
                             '{year}{dayofyear}_xr.nc').format(abiproduct=abiproduct,
