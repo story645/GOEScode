@@ -134,7 +134,8 @@ def processFilesToROI(platforms,
                       outputpath,
                       abiproduct='F',
                       target_proj = ccrs.Mercator(),
-                      overwrite=False):
+                      overwrite=False,
+                      short_circuit=False):
     
     # Reference projection for lon-lat
     debug(str(ROI))
@@ -165,7 +166,8 @@ def processFilesToROI(platforms,
         #print('\n'.join([fname[0] for fname in filelist]))
         if filelist and (overwrite or not xarray_out_path.exists()):
             # Short circuit for debugging
-            #filelist = filelist[:2]
+            if short_circuit:
+                filelist = filelist[:2]
             # Go through load each file
             # We know the number of files we have right here so lets commit memory
             # Lets get all the paramters and put asside the memory right now
@@ -235,19 +237,24 @@ def processFilesToROI(platforms,
                 single_file_end = datetime.datetime.now()
                 info('Extracted {} in Elapsed seconds: {}'.format(str(xr_dset.t.data),
                                                         (single_file_end - single_file_start).seconds))
-
-
-
-            xarray_name = ('OR_ABI-L1b-Rad{abiproduct}-M6C{band}_G{platform}_s' + 
-                            '{year}{dayofyear}_xr.nc').format(abiproduct=abiproduct,
-                                                        band=str(band).zfill(2),
-                                                        platform=str(platform).zfill(2),
-                                                        year=str(year),
-                                                        dayofyear=str(dayofyear).zfill(2))
             info('Attempting write of {}'.format(xarray_name))
             # save xarray with file name
-            xfile.to_netcdf(xarray_out_path)
-            info('Write of {} successful.'.format(xarray_name))
+            try:
+                if xarray_out_path.exists(): #May need to remove on overwrite on windows
+                    os.remove(xarray_out_path)
+                    info('Should have removed old {}'.fomat(xarray_out_path))
+                else:
+                    info("xarray_out_path.exists() reported false")
+                xfile.to_netcdf(xarray_out_path)
+                info('Write of {} successful.'.format(str(xarray_name)))
+            except Exception as e:
+                #Fall back to not lose data
+                warning(str(e))
+                warning('Try another name')
+                anothername = str(str(xarray_out_path)).split('.')[0]+'_'+str(np.random.randint(1111,9999))+'.nc'
+                xfile.to_netcdf(anothername)
+                info('Write of {} successful.'.format(str(anothername)))
+                
         elif (len(filelist) == 0):
             warning('No input files found for {}'.format(attriblist))
         elif (xarray_out_path.exists()):
@@ -272,7 +279,8 @@ def parseUserArgs():
     parser.add_argument('--pixels-north-south', help='Number of pixels north-south')
     parser.add_argument('--pixels-east-west', help='Number of pixels east-west')
     parser.add_argument('--logfile', help='Location of the logfile')
-    parser.add_argument('--overwrite', help='Should we overwrite any files found.')
+    parser.add_argument('--overwrite', help='Should we overwrite any files found.', action='store_true')
+    parser.add_argument('--short-circuit', help='DEBUGGING ONLY: cuts off at 2 files to extract', action='store_true')
     args = parser.parse_args()
     
     # Problem with code
@@ -332,6 +340,8 @@ def parseUserArgs():
         config['indatapath'] = Path(args.data_dir)
     if args.overwrite:
         config['overwrite'] = True
+    if args.short_circuit:
+        config['short_circuit'] = True
     if args.logfile:
         config['logfile'] = args.logfile
 
@@ -367,6 +377,7 @@ def main():
     info(str(config))
     info("Started run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
     del config['logfile'] # This would mess with processFilesToROI
+    debug(str(config))
     processFilesToROI(**config)
     finished = datetime.datetime.now()
     info("Finished run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
