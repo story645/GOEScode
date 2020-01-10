@@ -30,6 +30,7 @@ import logging
 
 info=None
 warning=None
+debug=None
 
 def goes_2_roi(loaded_goes, 
                target_extent,
@@ -70,7 +71,7 @@ def goes_2_roi(loaded_goes,
     area_proj_dqf_nn = geos_dqf_nn.resample(area_target_def)
     info('Extracted {}'.format(str(dat.t.data)))
     return area_proj_con_nn.image_data,area_proj_dqf_nn.image_data, lons, lats
-        
+
 def cartopy_pyresample_toggle_extent(input_extent):
     return np.array(input_extent)[np.array([0,2,1,3])]
 
@@ -140,7 +141,7 @@ def processFilesToROI(platforms,
                       overwrite=False):
     
     # Reference projection for lon-lat
-    info(str(ROI))
+    debug(str(ROI))
     pc = ccrs.PlateCarree()
     target_extent_mc_cartopy = trasform_cartopy_extent(ROI['extent'], pc, target_proj)
     target_extent_mc_pyresample = cartopy_pyresample_toggle_extent(target_extent_mc_cartopy)
@@ -148,6 +149,7 @@ def processFilesToROI(platforms,
     
     roidays = iterProduct(platforms, years, bands, daysofyear)
     # for attributes get list of files
+    debug("About to go through list of atribute tuples")
     for attriblist in roidays:
         info(str(attriblist))
         platform, year, band, dayofyear = attriblist
@@ -162,33 +164,39 @@ def processFilesToROI(platforms,
         dirlist = os.listdir(indatapath)
         # if not empty
         filelist = sorted(getMatchesFromFiles(dirlist, band=band, platform=platform, year=year, dayofyear=dayofyear))
+        debug('Getting filelist.')
         info("There are {} files that match criteria for {}".format(len(filelist), attriblist))
         #print('\n'.join([fname[0] for fname in filelist]))
         if filelist and (overwrite or not xarray_out_path.exists()):
             # Short circuit for debugging
-            # filelist = filelist[:2]
+            filelist = filelist[:2]
             # Go through load each file
             # We know the number of files we have right here so lets commit memory
             # Lets get all the paramters and put asside the memory right now
             data_sz = (ROI['east_west_px'],ROI['north_south_px'],len(filelist))
             # Need to get type dtype from first file
-            with xr.open_dataset(Path(indatapath, filelist[0][0])) as xr_dset:
-                time_dtype = np.dtype(xr_dset.t.data)
-            xfile = xr.Dataset({'Rad':(['x','y','time'],np.empty(data_sz)),
-                    'DQF':(['x','y','time'],np.empty(data_sz)),
-                        'planck_fk1':(['time'],np.empty(data_sz[-1])),
-                        'planck_fk2':(['time'],np.empty(data_sz[-1])),
-                        'planck_bc1':(['time'],np.empty(data_sz[-1])),
-                        'planck_bc2':(['time'],np.empty(data_sz[-1]))}, 
-                        coords={'lon': (['x', 'y'], np.empty(data_sz[:2])),
-                                'lat': (['x', 'y'], np.empty(data_sz[:2])),
-                                'time':np.array([None]*data_sz[-1],dtype=time_dtype)},
-                        attrs={'platform':platform,
-                                'abiproduct':'OR_ABI-L1b-Rad'+abiproduct,
-                                'band':band})
+            time_dtype = np.dtype('<M8[ns]')
+            Rad_dtype  = np.dtype('float32')
+            DQF_dtype  = np.dtype('float32')
+            lat_lon_dtype = np.dtype('float64')
+            plank_dtype = np.dtype('float64')
+            xfile = xr.Dataset({
+                    'Rad':(['x','y','time'],np.empty(data_sz, dtype=Rad_dtype)),
+                    'DQF':(['x','y','time'],np.empty(data_sz, dtype=DQF_dtype)),
+                    'planck_fk1':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
+                    'planck_fk2':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
+                    'planck_bc1':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
+                    'planck_bc2':(['time'],np.empty(data_sz[-1], dtype=plank_dtype))}, 
+                    coords={'lon': (['x', 'y'], np.empty(data_sz[:2], dtype=lat_lon_dtype)),
+                            'lat': (['x', 'y'], np.empty(data_sz[:2], dtype=lat_lon_dtype)),
+                            'time':np.array([None]*data_sz[-1], dtype=time_dtype)},
+                    attrs={'platform':platform,
+                           'abiproduct':'OR_ABI-L1b-Rad'+abiproduct,
+                           'band':band})
             # Add lon, lat with first file
             added_lon_lat = False
             for ind, fname in  enumerate(filelist):
+                single_file_start = datetime.datetime.now()
                 # For memory best not to do this in one shot
                 # forloop means we can load just what we need
                 # Making sure we don't create any unnecessary data structures
@@ -203,14 +211,19 @@ def processFilesToROI(platforms,
                     if not added_lon_lat:
                         _, _, lat, lon = ROI_extraction
                         added_lon_lat = True
+                        debug('lat min:{} max:{} mean{}'.format(lat.min(), lat.max(), lat.mean()))
+                        debug('lon min:{} max:{} mean{}'.format(lon.min(), lon.max(), lon.mean()))
                     xfile.Rad.data[:,:,ind] = ROI_extraction[0]
+                    debug('ROI min:{} max:{} mean{}'.format(ROI_extraction[0].min(), ROI_extraction[0].max(), ROI_extraction[0].mean()))
                     xfile.DQF.data[:,:,ind] = ROI_extraction[1]
+                    debug('DFQ min:{} max:{} mean{}'.format(ROI_extraction[1].min(), ROI_extraction[1].max(), ROI_extraction[1].mean()))
                     xfile.time.data[ind]=xr_dset.t.data
                     xfile.planck_fk1.data[ind] = xr_dset.planck_fk1.data
                     xfile.planck_fk2.data[ind] = xr_dset.planck_fk2.data
                     xfile.planck_bc1.data[ind] = xr_dset.planck_bc1.data
                     xfile.planck_bc2.data[ind] = xr_dset.planck_bc2.data
-
+                single_file_end = datetime.datetime.now()
+                info("Elapsed seconds: {}".format((single_file_end - single_file_start).seconds))
 
 
             xarray_name = ('OR_ABI-L1b-Rad{abiproduct}-M6C{band}_G{platform}_s' + 
@@ -324,10 +337,10 @@ def parseUserArgs():
 
     return config
 
-
 def main():
     global info
     global warning
+    global debug
     config = parseUserArgs()
     started = datetime.datetime.now()
     # identifier for the logging
@@ -335,10 +348,10 @@ def main():
     logging.basicConfig(filename=config['logfile'],
                         format='%(levelname)s %(asctime)s %(message)s '+str(Rid) + ':', 
                         datefmt='%m/%d/%Y %I:%M:%S %p',
-                        level=logging.INFO)
+                        level=logging.DEBUG)
     info=logging.info
     warning=logging.warning
-
+    debug=logging.debug
     info(str(config))
     info("Started run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
     del config['logfile'] # This would mess with processFilesToROI
@@ -346,6 +359,7 @@ def main():
     finished = datetime.datetime.now()
     info("Finished run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
     info("Elapsed seconds: {}".format((finished-started).seconds))
+
 if __name__ == '__main__':
     main()
 
