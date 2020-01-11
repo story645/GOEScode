@@ -216,7 +216,7 @@ def processFilesToROI(platforms,
             attrs ={'platform':platform,
                     'abiproduct':abiproduct}
             if band:
-                attrs[band] = str(band)
+                attrs['band'] = band
             xfile = xr.Dataset({
                     data_key:(['x','y','time'],np.empty(data_sz, dtype=con_dtype)),
                     'DQF':(['x','y','time'],np.empty(data_sz, dtype=DQF_dtype)),
