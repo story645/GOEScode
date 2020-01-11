@@ -110,11 +110,16 @@ def convert2intIfPossible(value):
             pass
         return value
 
-def getMatchesFromFiles(filenames,band=None, platform=None, year=None, dayofyear=None, hour=None, minute=None, second=None):
-    strPatt = (r'.*OR_ABI-L1b-Rad(?P<product>[CFM])-M6C(?P<band>\d{2})_G(?P<platform>\d{2})_s' + 
+def getMatchesFromFiles(filenames,product=None, band=None, platform=None, year=None, dayofyear=None, hour=None, minute=None, second=None):
+    strPatt = (r'(?P<product>(OR_ABI-L1b-Rad[CFM]|OR_ABI-L2-ACM[CFM]))-M6(C?)(?P<band>\d{0,2})_G(?P<platform>\d{2})_s' + 
         r'(?P<year>\d{4})(?P<dayofyear>\d{3})(?P<hour>\d{2})(?P<minute>\d{2})(?P<seconds>\d{2}).*\.nc')
     patt = re.compile(strPatt)
-    kwargs = {'band':band, 'platform':platform, 'year':year,'dayofyear':dayofyear, 'hour':hour, 'minute':minute, 'second':second}
+    kwargs = {'product':product,
+              'band':band, 
+              'platform':platform, 
+              'year':year,
+              'dayofyear':dayofyear, 
+              'hour':hour, 'minute':minute, 'second':second}
     pairs = [(filename, re.match(patt,filename)) for filename in filenames if re.match(patt,filename)]
     filtered = pairs
     for key, value in kwargs.items():
@@ -132,12 +137,19 @@ def processFilesToROI(platforms,
                       ROI,
                       indatapath,
                       outputpath,
-                      abiproduct='F',
+                      abiproduct='OR_ABI-L1b-RadF',
                       target_proj = ccrs.Mercator(),
                       overwrite=False,
                       short_circuit=False):
     
     # Reference projection for lon-lat
+    if abiproduct[-4:-1]=='Rad':
+        data_key='Rad'
+    elif abiproduct[-4:-1]=='ACM':
+        data_key = 'BCM'
+        band = [''] # Cloud make doesn't have a band
+    else:
+        raise Exception('Datatype not implmented.')
     debug(str(ROI))
     pc = ccrs.PlateCarree()
     target_extent_mc_cartopy = trasform_cartopy_extent(ROI['extent'], pc, target_proj)
@@ -151,7 +163,7 @@ def processFilesToROI(platforms,
         info(str(attriblist))
         platform, year, band, dayofyear = attriblist
         # build filename
-        xarray_name = ('OR_ABI-L1b-Rad{abiproduct}-M6C{band}_G{platform}_s' + 
+        xarray_name = ('{abiproduct}-M6C{band}_G{platform}_s' + 
         '{year}{dayofyear}_xr.nc').format(abiproduct=abiproduct,
                                     band=str(band).zfill(2),
                                     platform=str(platform).zfill(2),
@@ -160,7 +172,9 @@ def processFilesToROI(platforms,
         xarray_out_path = Path(outputpath,xarray_name)
         dirlist = os.listdir(indatapath)
         # if not empty
-        filelist = sorted(getMatchesFromFiles(dirlist, band=band, platform=platform, year=year, dayofyear=dayofyear))
+        if not band:
+            band = None
+        filelist = sorted(getMatchesFromFiles(dirlist,product=abiproduct, band=band, platform=platform, year=year, dayofyear=dayofyear))
         debug('Getting filelist.')
         info("There are {} files that match criteria for {}".format(len(filelist), attriblist))
         #print('\n'.join([fname[0] for fname in filelist]))
@@ -174,9 +188,15 @@ def processFilesToROI(platforms,
                         # We need to get the cartopy_crs out of the first file
             data_sz = (ROI['east_west_px'],ROI['north_south_px'],len(filelist))
             with xr.open_dataset(Path(indatapath, filelist[0][0])) as xr_dset:
-                rad_dat = xr_dset.metpy.parse_cf('Rad')
-                goes_crs = rad_dat.metpy.cartopy_crs
-                source_cols, source_rows = xr_dset.Rad.data.shape
+                try:
+                    con_dat = xr_dset.metpy.parse_cf(data_key)
+                except Exception as a:
+                    print('data_kay:', data_key)
+                    print('Path(indatapath, filelist[0][0])', Path(indatapath, filelist[0][0]))
+                    print('xr_dset.metpy.parse_cf(): ')
+                    print(xr_dset.metpy.parse_cf())
+                goes_crs = con_dat.metpy.cartopy_crs
+                source_cols, source_rows = xr_dset[data_key].data.shape
             debug('goes_crs: {}'.format(goes_crs))
             source_area, area_target_def = build_geometry(goes_crs,
                                                         source_rows,
@@ -189,12 +209,16 @@ def processFilesToROI(platforms,
             
             # Need to get type dtype from first file
             time_dtype = np.dtype('<M8[ns]')
-            Rad_dtype  = np.dtype('float32')
+            con_dtype  = np.dtype('float32')
             DQF_dtype  = np.dtype('float32')
             lat_lon_dtype = np.dtype('float64')
             plank_dtype = np.dtype('float64')
+            attrs ={'platform':platform,
+                    'abiproduct':abiproduct}
+            if band:
+                attrs[band] = str(band)
             xfile = xr.Dataset({
-                    'Rad':(['x','y','time'],np.empty(data_sz, dtype=Rad_dtype)),
+                    data_key:(['x','y','time'],np.empty(data_sz, dtype=con_dtype)),
                     'DQF':(['x','y','time'],np.empty(data_sz, dtype=DQF_dtype)),
                     'planck_fk1':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
                     'planck_fk2':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
@@ -203,9 +227,7 @@ def processFilesToROI(platforms,
                     coords={'lon': (['x', 'y'], lons),
                             'lat': (['x', 'y'], lats),
                             'time':np.array([None]*data_sz[-1], dtype=time_dtype)},
-                    attrs={'platform':platform,
-                           'abiproduct':'OR_ABI-L1b-Rad'+abiproduct,
-                           'band':band})
+                    attrs=attrs)
 
 
             for ind, fname in  enumerate(filelist):
@@ -217,12 +239,14 @@ def processFilesToROI(platforms,
                 with xr.open_dataset(Path(indatapath, fname[0])) as xr_dset:
                     # Do ROI conversions for each loaded file
 
-                    xfile.Rad.data[:,:,ind] = goes_2_roi(xr_dset, 
+                    xfile[data_key].data[:,:,ind] = goes_2_roi(xr_dset, 
                                                         source_area, 
                                                         area_target_def,
-                                                        data_key='Rad',
+                                                        data_key=data_key,
                                                         radius_of_influence=50000)
-                    debug('ROI min:{} max:{} mean{}'.format(xfile.Rad.data[:,:,ind].min(), xfile.Rad.data[:,:,ind].max(), xfile.Rad.data[:,:,ind].mean()))
+                    debug('ROI min:{} max:{} mean{}'.format(xfile[data_key].data[:,:,ind].min(), 
+                                                            xfile[data_key].data[:,:,ind].max(), 
+                                                            xfile[data_key].data[:,:,ind].mean()))
                     xfile.DQF.data[:,:,ind] = goes_2_roi(xr_dset, 
                                                         source_area, 
                                                         area_target_def,
@@ -251,7 +275,7 @@ def processFilesToROI(platforms,
                 #Fall back to not lose data
                 warning(str(e))
                 warning('Try another name')
-                anothername = str(str(xarray_out_path)).split('.')[0]+'_'+str(np.random.randint(1111,9999))+'.nc'
+                anothername = str(xarray_out_path).split('.')[0]+'_'+str(np.random.randint(1111,9999))+'.nc'
                 xfile.to_netcdf(anothername)
                 info('Write of {} successful.'.format(str(anothername)))
                 
@@ -268,6 +292,7 @@ def processFilesToROI(platforms,
 
 def parseUserArgs():
     parser = argparse.ArgumentParser(description='Process GOES files to extract ROI.')
+    parser.add_argument('--product', help='Currently this is a list of goes 16 or 17 eg. --product=OR_ABI-L1b-RadF')
     parser.add_argument('--platform', help='Currently this is a list of goes 16 or 17 eg. --platform=16,17')
     parser.add_argument('--year', help='Data in which year --year=2019')
     parser.add_argument('--dayofyear', help='Julian day of the year eg. --dayofyear=103')
@@ -290,6 +315,7 @@ def parseUserArgs():
     # that SHOULD over-ride config file
     # so I need to detect default values
     config = {
+        'abiproduct': 'OR_ABI-L1b-RadF',
         'platforms': [16,17],
         'years': [2019,2020],
         'daysofyear': list(range(1,366)),  
@@ -344,6 +370,8 @@ def parseUserArgs():
         config['short_circuit'] = True
     if args.logfile:
         config['logfile'] = args.logfile
+    if args.product:
+        config['abiproduct'] = args.product
 
     # Just in case paths are strings
     config['outputpath'] = Path(config['outputpath'])    
