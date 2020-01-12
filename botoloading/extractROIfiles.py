@@ -21,7 +21,7 @@ import re
 import xarray as xr
 from itertools import product as iterProduct
 from pathlib import Path
-import datetime
+import datetime as dt
 import argparse
 import warnings
 import sys
@@ -87,17 +87,21 @@ def normIm(im,gamma=1.0,reverse=False):
 
 def getPlankConsts(satim):
     """Extract the planck parameters fk1, fk2, bc1 and bc2 for temperature conversion."""
+    fk1 = satim['planck_fk1'].data[0] if len(satim['planck_fk1'].data)> 1 else satim['planck_fk1'].data
+    fk2 = satim['planck_fk2'].data[0] if len(satim['planck_fk2'].data)> 1 else satim['planck_fk2'].data
+    bc1 = satim['planck_bc1'].data[0] if len(satim['planck_bc1'].data)> 1 else satim['planck_bc1'].data
+    bc2 = satim['planck_bc2'].data[0] if len(satim['planck_bc2'].data)> 1 else satim['planck_bc2'].data
     return {
-    'fk1':float(satim['planck_fk1'].data),
-    'fk2':float(satim['planck_fk2'].data),
-    'bc1':float(satim['planck_bc1'].data),                       
-    'bc2':float(satim['planck_bc2'].data)}
+    'fk1':float(fk1),
+    'fk2':float(fk2),
+    'bc1':float(bc1),                       
+    'bc2':float(bc2)}
 
 def Rad2BT(rad, plancks):
     """Radiances to Brightness Temprature (using black body equation)"""
     # unpack
     fk1, fk2, bc1, bc2 = plancks['fk1'], plancks['fk2'], plancks['bc1'], plancks['bc2']
-    invRad = np.array(rad)**(-1)
+    invRad = rad**(-1)
     arg = (invRad*fk1) + 1.0
     T = (- bc1+(fk2 * (np.log(arg)**(-1))) )*(1/bc2) 
     return T
@@ -146,8 +150,9 @@ def processFilesToROI(platforms,
     if abiproduct[-4:-1]=='Rad':
         data_key='Rad'
     elif abiproduct[-4:-1]=='ACM':
+        info('Cloud mask request detected. data_key=BCM, band=""')
         data_key = 'BCM'
-        band = [''] # Cloud make doesn't have a band
+        bands = [''] # Cloud mask make doesn't have a band
     else:
         raise Exception('Datatype not implmented.')
     debug(str(ROI))
@@ -172,9 +177,11 @@ def processFilesToROI(platforms,
         xarray_out_path = Path(outputpath,xarray_name)
         dirlist = os.listdir(indatapath)
         # if not empty
-        if not band:
-            band = None
-        filelist = sorted(getMatchesFromFiles(dirlist,product=abiproduct, band=band, platform=platform, year=year, dayofyear=dayofyear))
+        if not bands[0]:
+            filelist = sorted(getMatchesFromFiles(dirlist,product=abiproduct, platform=platform, year=year, dayofyear=dayofyear))
+        else:
+            filelist = sorted(getMatchesFromFiles(dirlist,product=abiproduct, band=band, platform=platform, year=year, dayofyear=dayofyear))
+
         debug('Getting filelist.')
         info("There are {} files that match criteria for {}".format(len(filelist), attriblist))
         #print('\n'.join([fname[0] for fname in filelist]))
@@ -217,21 +224,27 @@ def processFilesToROI(platforms,
                     'abiproduct':abiproduct}
             if band:
                 attrs['band'] = band
-            xfile = xr.Dataset({
+            initDataDict = {
                     data_key:(['x','y','time'],np.empty(data_sz, dtype=con_dtype)),
-                    'DQF':(['x','y','time'],np.empty(data_sz, dtype=DQF_dtype)),
-                    'planck_fk1':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
+                    'DQF':(['x','y','time'],np.empty(data_sz, dtype=DQF_dtype))}
+            if data_key == 'Rad':
+                initDataDict.update(
+                    {'planck_fk1':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
                     'planck_fk2':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
                     'planck_bc1':(['time'],np.empty(data_sz[-1], dtype=plank_dtype)),
-                    'planck_bc2':(['time'],np.empty(data_sz[-1], dtype=plank_dtype))}, 
+                    'planck_bc2':(['time'],np.empty(data_sz[-1], dtype=plank_dtype))})
+
+            xfile = xr.Dataset(initDataDict, 
                     coords={'lon': (['x', 'y'], lons),
                             'lat': (['x', 'y'], lats),
                             'time':np.array([None]*data_sz[-1], dtype=time_dtype)},
                     attrs=attrs)
+            # Try to guarentee garbage collection.        
+            initDataDict=None
 
 
             for ind, fname in  enumerate(filelist):
-                single_file_start = datetime.datetime.now()
+                single_file_start = dt.datetime.now()
                 # For memory best not to do this in one shot
                 # forloop means we can load just what we need
                 # Making sure we don't create any unnecessary data structures
@@ -254,11 +267,12 @@ def processFilesToROI(platforms,
                                                         radius_of_influence=50000)
                     debug('DFQ min:{} max:{} mean{}'.format(xfile.DQF.data[:,:,ind].min(), xfile.DQF.data[:,:,ind].max(), xfile.DQF.data[:,:,ind].mean()))
                     xfile.time.data[ind]=xr_dset.t.data
-                    xfile.planck_fk1.data[ind] = xr_dset.planck_fk1.data
-                    xfile.planck_fk2.data[ind] = xr_dset.planck_fk2.data
-                    xfile.planck_bc1.data[ind] = xr_dset.planck_bc1.data
-                    xfile.planck_bc2.data[ind] = xr_dset.planck_bc2.data
-                single_file_end = datetime.datetime.now()
+                    if data_key=='Rad':
+                        xfile.planck_fk1.data[ind] = xr_dset.planck_fk1.data
+                        xfile.planck_fk2.data[ind] = xr_dset.planck_fk2.data
+                        xfile.planck_bc1.data[ind] = xr_dset.planck_bc1.data
+                        xfile.planck_bc2.data[ind] = xr_dset.planck_bc2.data
+                single_file_end = dt.datetime.now()
                 info('Extracted {} in Elapsed seconds: {}'.format(str(xr_dset.t.data),
                                                         (single_file_end - single_file_start).seconds))
             info('Attempting write of {}'.format(xarray_name))
@@ -392,7 +406,7 @@ def main():
     global warning
     global debug
     config = parseUserArgs()
-    started = datetime.datetime.now()
+    started = dt.datetime.now()
     # identifier for the logging
     Rid = np.random.randint(111111111,999999999)
     logging.basicConfig(filename=config['logfile'],
@@ -407,9 +421,23 @@ def main():
     del config['logfile'] # This would mess with processFilesToROI
     debug(str(config))
     processFilesToROI(**config)
-    finished = datetime.datetime.now()
+    finished = dt.datetime.now()
     info("Finished run: {}".format(started.strftime('%Y/%m/%D %I:%M %p')))
     info("Elapsed seconds: {}".format((finished-started).seconds))
+
+def matlab2datetime(matlab_datenum):
+    day = dt.datetime.fromordinal(int(matlab_datenum))
+    dayfrac = dt.timedelta(days=matlab_datenum%1) - dt.timedelta(days = 366)
+    return day + dayfrac
+
+def mat2pandas(matdata):
+    mattimes = np.array(matdata['TIME'][0])
+    times = [matlab2datetime(time) for time in mattimes]
+    temps = matdata['LWIRTemp'][0]
+    df = pd.DataFrame({'Time':times, 'LWIRTemp':temps})
+    df.set_index('Time',inplace=True)
+    return df
+
 
 if __name__ == '__main__':
     main()

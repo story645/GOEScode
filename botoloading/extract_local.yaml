@@ -1,0 +1,12 @@
+ROI:
+    east_west_px: 401
+    extent:
+    - -109.59326
+    - -102.40674
+    - 8.94659
+    - -8.94656
+    north_south_px: 1001
+indatapath: './data'
+outputpath: './output'
+years: 
+    - 2019
