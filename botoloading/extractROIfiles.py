@@ -193,7 +193,7 @@ def processFilesToROI(platforms,
             # We know the number of files we have right here so lets commit memory
             # Lets get all the paramters and put asside the memory right now
                         # We need to get the cartopy_crs out of the first file
-            data_sz = (ROI['east_west_px'],ROI['north_south_px'],len(filelist))
+            data_sz = (ROI['north_south_px'],ROI['east_west_px'],len(filelist))
             with xr.open_dataset(Path(indatapath, filelist[0][0])) as xr_dset:
                 try:
                     con_dat = xr_dset.metpy.parse_cf(data_key)
